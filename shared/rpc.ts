@@ -1,0 +1,263 @@
+import { defineRpc } from "./define";
+import { z } from "zod";
+import {
+  anchorSchema,
+  artboardSchema,
+  commentSchema,
+  commentStatusSchema,
+  designKindSchema,
+  editTextSchema,
+  moveStyleSchema,
+  manifestSchema,
+  slugSchema,
+  textTargetSchema,
+} from "./design";
+import { tweakValueSchema } from "./tweaks";
+
+const workspaceInput = z.object({ workspaceId: z.string().min(1) });
+const designInput = workspaceInput.extend({ slug: slugSchema });
+
+export const designSummarySchema = z.object({
+  slug: slugSchema,
+  title: z.string(),
+  kind: designKindSchema.nullable(),
+  artboards: z.number().int(),
+  openComments: z.number().int(),
+  /** Why design.json could not be read; null when it is fine. */
+  error: z.string().nullable(),
+});
+export type DesignSummary = z.infer<typeof designSummarySchema>;
+
+export const listDesigns = defineRpc({
+  name: "list_designs",
+  input: workspaceInput,
+  output: z.object({
+    /** Whether the workspace has design/canvas.json. */
+    initialized: z.boolean(),
+    designs: z.array(designSummarySchema),
+    /** Changes whenever a design is added, removed or renamed. */
+    version: z.string(),
+  }),
+});
+
+export const artboardViewSchema = artboardSchema.extend({
+  /** The page with its local CSS, images and fonts inlined; null when it could not be read. */
+  html: z.string().nullable(),
+  error: z.string().nullable(),
+  /** Changes whenever the page or a file it uses changes. */
+  version: z.string(),
+  /** A hash of the page's own HTML, which an edit must match to be written. */
+  source: z.string(),
+});
+export type ArtboardView = z.infer<typeof artboardViewSchema>;
+
+export const designViewSchema = z.object({
+  slug: slugSchema,
+  manifest: manifestSchema.nullable(),
+  /** Why design.json could not be used. */
+  error: z.string().nullable(),
+  artboards: z.array(artboardViewSchema),
+  comments: z.array(commentSchema),
+  /** The tweaks the user moved away from their defaults. */
+  tweakValues: z.record(z.string(), tweakValueSchema),
+  version: z.string(),
+});
+export type DesignView = z.infer<typeof designViewSchema>;
+
+export const getDesign = defineRpc({
+  name: "get_design",
+  input: designInput,
+  output: designViewSchema,
+});
+
+/** Cheap enough to poll: the same version `get_design` returns, without reading the pages. */
+export const getDesignVersion = defineRpc({
+  name: "get_design_version",
+  input: designInput,
+  output: z.object({ version: z.string() }),
+});
+
+export const addComment = defineRpc({
+  name: "add_comment",
+  input: designInput.extend({ body: z.string().trim().min(1).max(4000), anchor: anchorSchema }),
+  output: z.object({ comment: commentSchema }),
+});
+
+export const updateComment = defineRpc({
+  name: "update_comment",
+  input: designInput.extend({
+    id: z.string(),
+    body: z.string().trim().min(1).max(4000).optional(),
+    status: commentStatusSchema.optional(),
+  }),
+  output: z.object({ comment: commentSchema }),
+});
+
+export const deleteComment = defineRpc({
+  name: "delete_comment",
+  input: designInput.extend({ id: z.string() }),
+  output: z.object({}),
+});
+
+/** Marks comments as handed to the agent, after the message carrying them went out. */
+export const markCommentsSent = defineRpc({
+  name: "mark_comments_sent",
+  input: designInput.extend({ ids: z.array(z.string()).min(1) }),
+  output: z.object({}),
+});
+
+/** Creates design/canvas.json and design/README.md when missing, so agents get the design tools. */
+export const initCanvas = defineRpc({
+  name: "init_canvas",
+  input: workspaceInput,
+  output: z.object({ created: z.boolean() }),
+});
+
+/** Writes a dragged element's new position into its page, if the page is still the one the canvas showed. */
+export const moveElement = defineRpc({
+  name: "move_element",
+  input: designInput.extend({
+    artboardId: slugSchema,
+    dcId: z.string().min(1).max(120),
+    style: moveStyleSchema,
+    /** The `source` hash the canvas last saw. */
+    expected: z.string(),
+  }),
+  output: z.object({ source: z.string(), version: z.string() }),
+});
+
+/** Remembers where an artboard was dragged; null puts it back in the automatic layout. */
+export const moveArtboard = defineRpc({
+  name: "move_artboard",
+  input: designInput.extend({
+    artboardId: slugSchema,
+    position: z.object({ x: z.number().int(), y: z.number().int() }).nullable(),
+  }),
+  output: z.object({}),
+});
+
+/** Renames a design: its title in design.json, not its folder. */
+export const renameDesign = defineRpc({
+  name: "rename_design",
+  input: designInput.extend({ title: z.string().trim().min(1).max(200) }),
+  output: z.object({ title: z.string() }),
+});
+
+/** Moves a design to design/.trash/, from where it can be moved back by hand. */
+export const deleteDesign = defineRpc({
+  name: "delete_design",
+  input: designInput,
+  output: z.object({ trashedTo: z.string() }),
+});
+
+/** Replaces one text node's text in its page, if the page is still the one the canvas showed. */
+export const editText = defineRpc({
+  name: "edit_text",
+  input: designInput.extend({
+    artboardId: slugSchema,
+    target: textTargetSchema,
+    before: editTextSchema,
+    after: editTextSchema,
+    expected: z.string(),
+  }),
+  output: z.object({ source: z.string(), version: z.string() }),
+});
+
+/** Saves tweak values and regenerates tweaks.css. */
+export const saveTweaks = defineRpc({
+  name: "save_tweaks",
+  input: designInput.extend({
+    values: z.record(z.string(), tweakValueSchema),
+  }),
+  output: z.object({
+    values: z.record(z.string(), tweakValueSchema),
+    /** Each artboard's version after the write. */
+    versions: z.record(z.string(), z.string()),
+  }),
+});
+
+export const homeDesignSchema = designSummarySchema.extend({
+  /** When a file of the design last changed, in ms since the epoch. */
+  updatedAt: z.number(),
+  /** The agent that created the design, when the canvas knows it. */
+  agentId: z.string().nullable(),
+});
+export type HomeDesign = z.infer<typeof homeDesignSchema>;
+
+export const homeProjectSchema = z.object({
+  workspaceId: z.string(),
+  /** The workspace's folder; other workspaces on the same folder share its designs. */
+  directory: z.string(),
+  /** The project's name, e.g. the repository. */
+  project: z.string(),
+  /** The workspace's name, e.g. its branch; the same as `project` for a plain checkout. */
+  workspace: z.string(),
+  designs: z.array(homeDesignSchema),
+});
+export type HomeProject = z.infer<typeof homeProjectSchema>;
+
+/** Every workspace on this host, with the designs of those that use the canvas. */
+export const listHome = defineRpc({
+  name: "list_home",
+  input: z.object({}),
+  output: z.object({ projects: z.array(homeProjectSchema) }),
+});
+
+/** A design's first artboard, for its card on the home screen. */
+export const getCover = defineRpc({
+  name: "get_cover",
+  input: designInput,
+  output: z.object({ cover: artboardViewSchema.nullable() }),
+});
+
+/** The design as a zip to share: its folder, laid out as under design/. */
+export const exportDesign = defineRpc({
+  name: "export_design",
+  input: designInput,
+  output: z.object({ fileName: z.string(), base64: z.string() }),
+});
+
+/** Unpacks an exported design into the workspace's design/ folder, under a free name. */
+export const importDesign = defineRpc({
+  name: "import_design",
+  input: workspaceInput.extend({ base64: z.string().min(1).max(40_000_000) }),
+  output: z.object({
+    slug: slugSchema,
+    title: z.string(),
+    /** Shared files the workspace already had with other contents, left as they were. */
+    kept: z.array(z.string()),
+  }),
+});
+
+/** Starts a thread in the workspace that draws a new design. */
+export const startDesign = defineRpc({
+  name: "start_design",
+  input: workspaceInput.extend({ kind: designKindSchema, brief: z.string().min(1).max(8000) }),
+  output: z.object({ threadId: z.string() }),
+});
+
+/** The thread to open a design with: the preferred one if it still exists, else a recent one in the workspace. */
+export const findThread = defineRpc({
+  name: "find_thread",
+  input: workspaceInput.extend({ preferred: z.string().nullable(), create: z.boolean().default(true) }),
+  output: z.object({ threadId: z.string().nullable() }),
+});
+
+/** Sets the workspace up and sends a new-design request to a thread. */
+export const askForDesign = defineRpc({
+  name: "ask_for_design",
+  input: workspaceInput.extend({ threadId: z.string(), brief: z.string().min(1).max(8000) }),
+  output: z.object({}),
+});
+
+export const sendToThread = defineRpc({
+  name: "send_to_thread",
+  input: workspaceInput.extend({ threadId: z.string(), text: z.string().min(1).max(100_000) }),
+  output: z.object({}),
+});
+
+export const threadStatus = defineRpc({
+  name: "thread_status",
+  input: workspaceInput.extend({ threadId: z.string() }),
+  output: z.object({ status: z.string().nullable() }),
+});
