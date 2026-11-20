@@ -82,7 +82,6 @@ async function frameById(h, id) {
 }
 async function state(h) {
   const boards = await h.page.$$eval(".dc-board.dc-selected", (n) => n.map((x) => x.dataset.board));
-  const disabled = await h.page.$eval("button[aria-label='Copy as image'], button[aria-label='复制为图片']", (b) => b.disabled);
   const els = {};
   for (const id of ["a", "b"]) {
     const f = await frameById(h, id).catch(() => null);
@@ -90,15 +89,38 @@ async function state(h) {
     const log = await f.evaluate(() => window.__sel ?? []).catch(() => []);
     els[id] = log.length ? log[log.length - 1] : [];
   }
+  // The selection-only copy lives in the right-click menu; "disabled" now means "nothing selected".
+  const disabled = boards.length === 0 && Object.values(els).every((list) => list.length === 0);
   return { boards, els, disabled };
 }
-const copyBtn = (h) => h.page.locator("button[data-tip='Copy as image'], button[data-tip='复制为图片']");
+const copyBtn = (h) => h.page.locator("button[data-tip='Copy canvas as image'], button[data-tip='复制画布为图片']");
 async function toastText(h, timeout = 20000) {
   await h.page.waitForSelector(".dc-toast", { timeout });
   return h.page.$eval(".dc-toast", (n) => n.textContent);
 }
 async function clearToast(h) { await h.page.evaluate(() => document.querySelector(".dc-toast")?.remove()); }
+/** Copies the current selection through the right-click menu, opened on an item already selected. */
 async function copyViaButton(h) {
+  await clearToast(h);
+  let s = await state(h);
+  for (let i = 0; i < 20 && s.disabled; i++) { await h.page.waitForTimeout(100); s = await state(h); }
+  if (s.boards.length) {
+    await h.page.locator(`[data-board=${s.boards[0]}] .dc-board-label`).click({ button: "right", position: { x: 6, y: 6 } });
+  } else {
+    const [board, ids] = Object.entries(s.els).find(([, list]) => list.length);
+    // Right-click the visible middle of the element: it may stick out of its artboard.
+    const f = await frameById(h, board);
+    const e = await f.locator(`[data-dc-id=${ids[ids.length - 1]}]`).boundingBox();
+    const fr = await h.page.locator(`[data-board=${board}] iframe`).boundingBox();
+    const x0 = Math.max(e.x, fr.x), x1 = Math.min(e.x + e.width, fr.x + fr.width);
+    const y0 = Math.max(e.y, fr.y), y1 = Math.min(e.y + e.height, fr.y + fr.height);
+    await h.page.mouse.click((x0 + x1) / 2, (y0 + y1) / 2, { button: "right" });
+  }
+  await h.page.locator(".dc-menu .dc-menu-pick", { hasText: /Copy as image|复制为图片/ }).click();
+  return toastText(h);
+}
+/** The toolbar copies the whole canvas; used where every artboard is the selection anyway. */
+async function copyCanvas(h) {
   await clearToast(h);
   await copyBtn(h).click();
   return toastText(h);
@@ -251,11 +273,11 @@ tests.T3 = async () => {
   const h = await open({ slug: "d2" });
   await clickTitle(h, "a");
   await setZoom(h, "25%");
-  await copyViaButton(h);
+  await copyCanvas(h);
   const d1 = await readClip(h);
   await h.page.evaluate(() => window.__h.keepAsRef());
   await setZoom(h, "400%");
-  await copyViaButton(h);
+  await copyCanvas(h);
   const d2 = await readClip(h);
   check("T3", "both zooms give 800x600", d1.w === 800 && d1.h === 600 && d2.w === 800 && d2.h === 600, JSON.stringify([d1, d2]));
   const same = await h.page.evaluate(() => window.__h.equalToRef());
@@ -339,6 +361,24 @@ tests.T9 = async () => {
   await h.context.close();
 };
 
+tests.T19 = async () => {
+  const h = await open();
+  await h.page.waitForTimeout(300);
+  check("T19", "toolbar button enabled with nothing selected", !(await copyBtn(h).isDisabled()));
+  await clearToast(h);
+  await copyBtn(h).click();
+  const toast = await toastText(h);
+  const d = await readClip(h);
+  const width = await h.page.evaluate(() => {
+    const boards = [...document.querySelectorAll(".dc-board")].map((n) => n.getBoundingClientRect());
+    return boards.length;
+  });
+  check("T19", "toolbar copies every artboard: composite starts at A and ends at B's right edge (3872 wide)", d.w === 3872 && width === 2, JSON.stringify([d, toast]));
+  check("T19", "selection unchanged by the canvas copy", (await state(h)).disabled);
+  await save(h, "T19-canvas.png");
+  await h.context.close();
+};
+
 tests.T10 = async () => {
   const h = await open();
   await clickTitle(h, "a");
@@ -354,7 +394,7 @@ tests.T10 = async () => {
   await clickTitle(h, "b", { modifiers: ["Shift"] });
   const s = await state(h);
   check("T10", "A and B both selected", s.boards.length === 2, JSON.stringify(s));
-  const toast = await copyViaButton(h);
+  const toast = await copyCanvas(h);
   const d = await readClip(h);
   check("T10", "copy succeeds with a scale percentage in the toast", /scaled to \d+%/.test(toast), toast);
   check("T10", "PNG side <= 16384 and area <= 67,108,864", d.w <= 16384 && d.h <= 16384 && d.w * d.h <= 67108864 && d.w > 1000, JSON.stringify(d));
@@ -575,7 +615,7 @@ tests.T15 = async () => {
 };
 
 tests.T16 = async () => {
-  for (const [locale, tip, width] of [["en-US", "Copy as image", 360], ["en-US", "Copy as image", 1600], ["zh-CN", "复制为图片", 360], ["zh-CN", "复制为图片", 1600]]) {
+  for (const [locale, tip, width] of [["en-US", "Copy canvas as image", 360], ["en-US", "Copy canvas as image", 1600], ["zh-CN", "复制画布为图片", 360], ["zh-CN", "复制画布为图片", 1600]]) {
     const h = await open({ viewport: { width, height: 800 }, locale });
     const b = await h.page.locator(`button[data-tip='${tip}']`).boundingBox();
     check("T16", `${locale} @${width}: copy button visible with tooltip '${tip}'`, b && b.x >= 0 && b.x + b.width <= width && b.height > 20, JSON.stringify(b));

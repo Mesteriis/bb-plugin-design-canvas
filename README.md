@@ -31,9 +31,11 @@ On the canvas:
   redoes.
   Clicking an artboard's title selects the artboard (it no longer centres the view in Move); Shift-click adds or
   removes artboards and elements, across artboards. Escape or a click on the empty canvas clears the selection.
-  **Copy as image** (toolbar button, or right-click an artboard, its title or an element) puts the selection on the
-  clipboard as one PNG at 2x: one item alone, or several placed as they sit on the canvas on a transparent
-  background. Very large selections are scaled down to fit the browser's canvas limit, and the toast says so.
+  **Copy as image** (right-click an artboard, its title or an element) puts the selection on the clipboard as one
+  PNG at 2x: one item alone, or several placed as they sit on the canvas on a transparent background. The toolbar's
+  **Copy canvas as image** does the same for every artboard. Very large images are scaled down to fit the
+  browser's canvas limit, and the toast says so. On a plain-http address, where the browser has no image
+  clipboard, the image opens in a preview instead: right-click it and choose Copy Image.
 - **Hand** (H) pans with a drag anywhere; hold Space for it in any tool. **Preview** (P) follows links between
   artboards. **Comment** (C) highlights the element under the pointer; click to comment, Alt+click for the exact
   element, Ctrl/Cmd+Enter to add.

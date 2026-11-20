@@ -101,6 +101,7 @@
   "otherDesigns": "打开已有设计…",
   "backToWorkspace": "回到当前工作区",
   "copyAsImage": "复制为图片",
+  "copyCanvasAsImage": "复制画布为图片",
   "copied": "已复制为图片",
   "copiedScaled": "已复制为图片（缩放至 {{percent}}%）",
   "copyFailed": "无法复制图片：{{error}}",

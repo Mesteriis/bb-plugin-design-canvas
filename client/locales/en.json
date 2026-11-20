@@ -101,6 +101,7 @@
   "otherDesigns": "Open an existing design…",
   "backToWorkspace": "Back to this workspace",
   "copyAsImage": "Copy as image",
+  "copyCanvasAsImage": "Copy canvas as image",
   "copied": "Copied as image",
   "copiedScaled": "Copied as image, scaled to {{percent}}% to fit",
   "copyFailed": "Couldn't copy the image: {{error}}",

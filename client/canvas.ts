@@ -233,7 +233,7 @@ export function mountCanvas(options: CanvasOptions): CanvasHandle {
   const zoomIn = button(t("zoomIn"), "plus", () => zoomStep(1), "dc-btn dc-icon");
   const fitButton = button(t("fit"), "fit", () => fit(), "dc-btn dc-icon");
   const guidesButton = button(t("guides"), "grid", () => setGuides(!guides), "dc-btn dc-icon");
-  const copyButton = button(t("copyAsImage"), "image", () => copySelection(), "dc-btn dc-icon");
+  const copyButton = button(t("copyCanvasAsImage"), "image", () => copyItems(allBoards()), "dc-btn dc-icon");
   copyButton.disabled = true;
   const status = el("span", "dc-status");
   const newButton = button(t("newDesign"), "sparkles", () => openNewDesign(), "dc-btn");
@@ -410,7 +410,6 @@ export function mountCanvas(options: CanvasOptions): CanvasHandle {
       board.wrap.classList.toggle("dc-selected", selection.some((item) => item.kind === "board" && item.boardId === board.view.id));
       if (board.ready) sendSelection(board);
     }
-    copyButton.disabled = selection.length === 0;
   }
 
   function selectOnly(item: SelectionItem): void {
@@ -475,7 +474,7 @@ export function mountCanvas(options: CanvasOptions): CanvasHandle {
       closeContextMenu();
       // The menu button had focus; without this it falls to body, outside the key handler
       root.focus({ preventScroll: true });
-      copySelection();
+      copyItems(selection);
     });
     const row = el("div", "dc-menu-item");
     row.append(pick);
@@ -527,7 +526,11 @@ export function mountCanvas(options: CanvasOptions): CanvasHandle {
   }
 
   /** One PNG of the selection; `info` learns the smallest scale used and what was skipped. */
-  function composeSelection(info: { scale: number; skipped: string[] }): Promise<Blob> {
+  function allBoards(): SelectionItem[] {
+    return [...boards.keys()].map((boardId) => ({ kind: "board", boardId }));
+  }
+
+  function composeItems(selection: SelectionItem[], info: { scale: number; skipped: string[] }): Promise<Blob> {
     const wholeBoards = new Set(selection.flatMap((item) => (item.kind === "board" ? [item.boardId] : [])));
     // A component inside a selected artboard is already in its image.
     const items = selection.filter((item) => item.kind === "board" || !wholeBoards.has(item.boardId));
@@ -573,11 +576,11 @@ export function mountCanvas(options: CanvasOptions): CanvasHandle {
   }
 
   /** Runs inside the click: the clipboard write needs the user's activation, so it starts before any render finishes. */
-  function copySelection(): void {
-    if (selection.length === 0) return;
+  function copyItems(items: SelectionItem[]): void {
+    if (items.length === 0) return;
     const info = { scale: COPY_SCALE, skipped: [] as string[] };
     let renderError: unknown = null;
-    const render = composeSelection(info).catch((error) => {
+    const render = composeItems(items, info).catch((error) => {
       renderError = error;
       throw error;
     });
@@ -827,6 +830,7 @@ export function mountCanvas(options: CanvasOptions): CanvasHandle {
       if (reload) loadFrame(existing);
       if (resized || reload) queueLayout();
     }
+    copyButton.disabled = boards.size === 0;
     queueLayout();
   }
 
@@ -1644,6 +1648,7 @@ export function mountCanvas(options: CanvasOptions): CanvasHandle {
     for (const board of boards.values()) board.wrap.remove();
     boards.clear();
     closePopover();
+    copyButton.disabled = true;
   }
 
   function showBanner(message: string | null): void {
