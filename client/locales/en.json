@@ -106,7 +106,7 @@
   "copyFailed": "Couldn't copy the image: {{error}}",
   "copySkipped": "Skipped, not loaded: {{names}}",
   "copyNothingReady": "Nothing selected is loaded yet",
-  "copyUnsupported": "This browser can't copy images",
   "copyTimeout": "The artboard didn't answer",
-  "copyReloaded": "The artboard reloaded while copying"
+  "copyReloaded": "The artboard reloaded while copying",
+  "savedAsFile": "Saved as a PNG: this address can't use the clipboard"
 }

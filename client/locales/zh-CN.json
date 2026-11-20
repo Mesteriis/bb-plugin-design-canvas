@@ -106,7 +106,7 @@
   "copyFailed": "无法复制图片：{{error}}",
   "copySkipped": "已跳过未加载的画板：{{names}}",
   "copyNothingReady": "所选内容尚未加载",
-  "copyUnsupported": "此浏览器无法复制图片",
   "copyTimeout": "画板没有响应",
-  "copyReloaded": "复制时画板已重新加载"
+  "copyReloaded": "复制时画板已重新加载",
+  "savedAsFile": "已保存为 PNG：此地址无法使用剪贴板"
 }

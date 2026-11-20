@@ -21,6 +21,7 @@ import {
   type TweakValues,
   usesVariable,
 } from "../shared/tweaks";
+import { experimental_copyToClipboard, experimental_saveFile } from "@get-bb/plugin-sdk/app";
 import { fileToBase64 } from "./files";
 import { icon, type IconName } from "./icons";
 import {
@@ -575,11 +576,6 @@ export function mountCanvas(options: CanvasOptions): CanvasHandle {
   /** Runs inside the click: the clipboard write needs the user's activation, so it starts before any render finishes. */
   function copySelection(): void {
     if (selection.length === 0) return;
-    const clipboard = win!.navigator.clipboard;
-    if (!clipboard?.write || typeof win!.ClipboardItem === "undefined") {
-      toast(t("copyUnsupported"));
-      return;
-    }
     const info = { scale: COPY_SCALE, skipped: [] as string[] };
     let renderError: unknown = null;
     const render = composeSelection(info).catch((error) => {
@@ -590,14 +586,37 @@ export function mountCanvas(options: CanvasOptions): CanvasHandle {
       const reason = renderError ?? error;
       toast(reason instanceof CopyNotice ? reason.message : t("copyFailed", { error: describe(reason) }));
     };
-    try {
-      void clipboard.write([new win!.ClipboardItem({ "image/png": render })]).then(() => {
-        const done = info.scale < COPY_SCALE ? t("copiedScaled", { percent: String(Math.round(info.scale * 100)) }) : t("copied");
-        toast(info.skipped.length ? `${done} · ${t("copySkipped", { names: info.skipped.join(", ") })}` : done);
-      }, failed);
-    } catch (error) {
-      failed(error);
+    const report = (key: "copied" | "savedAsFile") => {
+      const done =
+        key === "copied" && info.scale < COPY_SCALE ? t("copiedScaled", { percent: String(Math.round(info.scale * 100)) }) : t(key);
+      toast(info.skipped.length ? `${done} · ${t("copySkipped", { names: info.skipped.join(", ") })}` : done);
+    };
+    const clipboard = win!.navigator.clipboard;
+    if (clipboard?.write && typeof win!.ClipboardItem !== "undefined") {
+      try {
+        void clipboard.write([new win!.ClipboardItem({ "image/png": render })]).then(() => report("copied"), failed);
+      } catch (error) {
+        failed(error);
+      }
+      return;
     }
+    // ponytail: browsers hide the image clipboard outside a secure origin (bb over plain http on a LAN IP).
+    // There bb's own copy path carries the PNG as an <img> in HTML, which rich editors paste as an image;
+    // if that fails too, the PNG downloads. Upgrade: a native image write in the SDK, or bb over https.
+    void render.then(async (blob) => {
+      const html = `<img src="${await blobToDataUrl(blob)}" alt="${t("copyAsImage")}">`;
+      if (await experimental_copyToClipboard({ text: "", html })) return report("copied");
+      if ((await experimental_saveFile({ fileName: `${slug ?? "design"}.png`, blob })) === "started") report("savedAsFile");
+    }, failed);
+  }
+
+  function blobToDataUrl(blob: Blob): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new win!.FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(blob);
+    });
   }
 
   // ---- View --------------------------------------------------------------------------------
