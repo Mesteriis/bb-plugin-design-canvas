@@ -152,7 +152,8 @@ export const CANVAS_CSS = `
   border-radius: 2px; }
 .dc-root[data-mode="move"] .dc-board-label { cursor: move; }
 .dc-root[data-mode="hand"] .dc-board-label { cursor: grab; }
-.dc-board.dc-focus .dc-board-frame { outline: 2px solid var(--dc-accent); outline-offset: 2px; }
+.dc-board.dc-focus .dc-board-frame, .dc-board.dc-selected .dc-board-frame { outline: 2px solid var(--dc-accent); outline-offset: 2px; }
+.dc-board.dc-selected .dc-board-label b { font-weight: 700; }
 .dc-board-error { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center;
   background: var(--dc-surface); color: var(--dc-danger); border: 1px dashed var(--dc-border); font-size: 14px; }
 .dc-banner { margin: 8px; padding: 8px 12px; border-radius: 6px; background: color-mix(in srgb, var(--dc-danger) 14%, var(--dc-surface));

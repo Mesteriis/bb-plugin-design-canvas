@@ -99,5 +99,14 @@
   "add": "添加",
   "dropZipOnly": "请拖入从设计画布导出的 .zip。",
   "otherDesigns": "打开已有设计…",
-  "backToWorkspace": "回到当前工作区"
+  "backToWorkspace": "回到当前工作区",
+  "copyAsImage": "复制为图片",
+  "copied": "已复制为图片",
+  "copiedScaled": "已复制为图片（缩放至 {{percent}}%）",
+  "copyFailed": "无法复制图片：{{error}}",
+  "copySkipped": "已跳过未加载的画板：{{names}}",
+  "copyNothingReady": "所选内容尚未加载",
+  "copyUnsupported": "此浏览器无法复制图片",
+  "copyTimeout": "画板没有响应",
+  "copyReloaded": "复制时画板已重新加载"
 }

@@ -29,6 +29,10 @@ export const RUNTIME_SOURCE = String.raw`(function () {
   var selBox = null;
   // The Move tool's selection and the drag in progress
   var selected = null;
+  // The canvas's whole selection on this page (named elements), drawn as extra boxes
+  var selIds = [];
+  var extraBoxes = [];
+  var overlayRoot = null;
   var drag = null;
   // The text being edited: { span, before, target }
   var editing = null;
@@ -121,6 +125,12 @@ export const RUNTIME_SOURCE = String.raw`(function () {
     if (!el || el.nodeType !== 1 || isOurs(el) || !el.closest) return null;
     var named = el.closest("[data-dc-id]");
     return named && named !== document.documentElement && named !== document.body ? named : null;
+  }
+
+  /** The name the canvas selects an element by; one longer than the schema allows counts as unnamed. */
+  function idOf(el) {
+    var id = el ? el.getAttribute("data-dc-id") : null;
+    return id && id.length <= 120 ? id : null;
   }
 
   function positioned(el) {
@@ -273,8 +283,10 @@ export const RUNTIME_SOURCE = String.raw`(function () {
     node.parentNode.replaceChild(span, node);
     span.appendChild(node);
     editing = { span: span, before: node.data, target: target };
+    var lost = !!selected;
     selected = null;
     hovered = null;
+    if (lost) post({ type: "selection-lost" });
     span.addEventListener("blur", function () { endEdit(true); });
     span.addEventListener("paste", function (event) {
       event.preventDefault();
@@ -576,6 +588,7 @@ export const RUNTIME_SOURCE = String.raw`(function () {
     host = document.createElement("design-canvas-overlay");
     host.style.cssText = "position:absolute;left:0;top:0;width:0;height:0;z-index:2147483647;pointer-events:none;";
     var root = host.attachShadow ? host.attachShadow({ mode: "closed" }) : host;
+    overlayRoot = root;
     var style = document.createElement("style");
     style.textContent = [
       ".box{position:absolute;pointer-events:none;border-radius:3px;box-sizing:border-box;display:none}",
@@ -646,6 +659,24 @@ export const RUNTIME_SOURCE = String.raw`(function () {
     selBox.className = "box sel" + (editing ? " text" : "");
     place(selBox, boxed ? pageRect(boxed) : null, 1.5);
     for (var c = 0; c < selBox.children.length; c++) selBox.children[c].style.transform = "scale(" + scale + ")";
+    // The rest of the canvas's selection: boxes without handles
+    var extra = [];
+    if (mode === "move" && !editing) {
+      var own = selected ? idOf(selected) : null;
+      selIds.forEach(function (id) {
+        if (id === own) return;
+        var found = null;
+        try { found = document.querySelector('[data-dc-id="' + CSS.escape(id) + '"]'); } catch (e) {}
+        if (found) extra.push(found);
+      });
+    }
+    while (extraBoxes.length < extra.length) {
+      var more = document.createElement("div");
+      more.className = "box sel";
+      overlayRoot.insertBefore(more, hoverBox);
+      extraBoxes.push(more);
+    }
+    extraBoxes.forEach(function (box, i) { place(box, extra[i] ? pageRect(extra[i]) : null, 1.5); });
     drawTweak();
     while (layer.firstChild) layer.removeChild(layer.firstChild);
     // The visible width: a spinning or overflowing element must not push pins off the artboard
@@ -725,7 +756,14 @@ export const RUNTIME_SOURCE = String.raw`(function () {
     if (data.type === "mode") {
       mode = ["move", "hand", "comment", "preview"].indexOf(data.mode) >= 0 ? data.mode : "preview";
       hovered = null;
-      if (mode !== "move") { selected = null; drag = null; endEdit(true); }
+      if (mode !== "move") {
+        var had = !!selected;
+        selected = null;
+        selIds = [];
+        drag = null;
+        endEdit(true);
+        if (had) post({ type: "selection-lost" });
+      }
       showToolCursor();
     } else if (data.type === "set-style") {
       var styled = data.dcId ? document.querySelector('[data-dc-id="' + CSS.escape(data.dcId) + '"]') : null;
@@ -748,10 +786,17 @@ export const RUNTIME_SOURCE = String.raw`(function () {
       guides = !!data.on;
     } else if (data.type === "zoom") {
       scale = data.zoom > 0 ? 1 / data.zoom : 1;
+    } else if (data.type === "selection") {
+      selIds = Array.isArray(data.dcIds) ? data.dcIds.filter(function (id) { return typeof id === "string"; }) : [];
+      if (selected && selIds.indexOf(idOf(selected)) < 0) selected = null;
+    } else if (data.type === "capture") {
+      capture(data);
     } else if (data.type === "clear-selection") {
       picked = null;
+      var kept = !!selected;
       selected = null;
       endEdit(true);
+      if (kept) post({ type: "selection-lost" });
     } else if (data.type === "clear-hover") {
       hoverTweaks(null);
       if (!hovered) return;
@@ -789,6 +834,78 @@ export const RUNTIME_SOURCE = String.raw`(function () {
     }, true);
   });
 
+  // Any press tells the canvas, so it can close its context menu; the Move tool's right-click opens it.
+  window.addEventListener("pointerdown", function () { post({ type: "pointer" }); }, true);
+  document.addEventListener("contextmenu", function (event) {
+    if (mode !== "move" || isOurs(event.target) || inEditor(event.target)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    post({ type: "context", dcId: idOf(movable(event.target)), x: event.clientX, y: event.clientY });
+  }, true);
+
+  // ---- Copy as image ----
+
+  /**
+   * Draws the page (or one named element of it) to a PNG: the document is serialized into an SVG
+   * foreignObject, loaded as a data: image (a blob: one would taint the canvas), and cropped.
+   * ponytail: form values, canvas pixels and blob: images are not in the serialized markup, so they
+   * come out empty; upgrade path is copying them into attributes on the clone before serializing.
+   */
+  function capture(cmd) {
+    function fail(why) {
+      post({ type: "capture-failed", id: cmd.id, reason: String((why && why.message) || why).slice(0, 300) });
+    }
+    try {
+      endEdit(true);
+      var d = document.documentElement;
+      var W = Math.max(1, Math.round(cmd.width));
+      var H = Math.max(1, Math.round(cmd.height));
+      var rect = { x: 0, y: 0, width: W, height: H };
+      if (cmd.kind === "element") {
+        var el = cmd.dcId ? document.querySelector('[data-dc-id="' + CSS.escape(cmd.dcId) + '"]') : null;
+        if (!el) return fail("missing");
+        rect = pageRect(el);
+        H = Math.max(H, Math.min(20000, Math.ceil(pageHeight())));
+      }
+      var x0 = Math.max(0, rect.x), y0 = Math.max(0, rect.y);
+      var w = Math.min(W, rect.x + rect.width) - x0, h = Math.min(H, rect.y + rect.height) - y0;
+      if (!(w > 0 && h > 0)) return fail("empty");
+      var clone = d.cloneNode(true);
+      [].slice.call(clone.querySelectorAll('design-canvas-overlay,script,style[data-dc-cursor],meta[http-equiv="Content-Security-Policy"]'))
+        .forEach(function (node) { node.parentNode.removeChild(node); });
+      clone.removeAttribute("data-dc-tool");
+      // The page's background fills the whole image: html's, else the one body hands to the canvas
+      var hs = getComputedStyle(d);
+      var bs = document.body ? getComputedStyle(document.body) : null;
+      var fromBody = bs && hs.backgroundColor === "rgba(0, 0, 0, 0)" && hs.backgroundImage === "none";
+      clone.style.background = (fromBody ? bs : hs).background;
+      clone.style.minHeight = H + "px";
+      // The real root never collapses margins with its children; flow-root keeps that in the SVG
+      clone.style.display = "flow-root";
+      var cloneBody = clone.querySelector("body");
+      if (fromBody && cloneBody) cloneBody.style.background = "none";
+      var xml = new XMLSerializer().serializeToString(clone).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "");
+      var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + W + '" height="' + H + '" style="font-size:' + hs.fontSize + '">' +
+        '<foreignObject x="0" y="0" width="' + W + '" height="' + H + '">' + xml + "</foreignObject></svg>";
+      var img = new Image();
+      img.onload = function () {
+        try {
+          var s = Math.min(cmd.scale, cmd.maxSide / Math.max(w, h), Math.sqrt(cmd.maxArea / (w * h)));
+          var canvas = document.createElement("canvas");
+          canvas.width = Math.max(1, Math.round(w * s));
+          canvas.height = Math.max(1, Math.round(h * s));
+          canvas.getContext("2d").drawImage(img, -x0 * s, -y0 * s, W * s, H * s);
+          canvas.toBlob(function (blob) {
+            if (!blob) return fail("The image was too large to draw");
+            post({ type: "captured", id: cmd.id, blob: blob, x: x0, y: y0, width: w, height: h, scale: s });
+          }, "image/png");
+        } catch (e) { fail(e); }
+      };
+      img.onerror = function () { fail("The page could not be drawn"); };
+      img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+    } catch (e) { fail(e); }
+  }
+
   // Move: press selects the named element under the pointer, dragging moves it.
   window.addEventListener("pointerdown", function (event) {
     if (mode !== "move" || event.button !== 0 || isOurs(event.target)) return;
@@ -798,8 +915,15 @@ export const RUNTIME_SOURCE = String.raw`(function () {
     // Pressing was cancelled so the page does nothing, which also kept focus away: take it, so the
     // arrow keys reach this page. The canvas shortcuts still work, since keys are forwarded.
     try { window.focus(); } catch (e) {}
-    selected = el;
     hovered = null;
+    // Shift only toggles the canvas's selection: nothing is picked up to drag
+    if (event.shiftKey) {
+      post({ type: "select", dcId: idOf(el), shift: true });
+      schedule();
+      return;
+    }
+    selected = el;
+    post({ type: "select", dcId: idOf(el), shift: false });
     schedule();
     // What can't move only says so once dragged, so a double click to edit text stays quiet.
     var page = event.target === document.documentElement || event.target === document.body;

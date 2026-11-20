@@ -142,6 +142,27 @@ function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** One thing in the Move tool's selection: a whole artboard, or a named element inside one. */
+type SelectionItem = { kind: "board"; boardId: string } | { kind: "element"; boardId: string; dcId: string };
+
+/** A failure whose message is already the whole toast. */
+class CopyNotice extends Error {}
+
+/** Copy as image: the pixel scale, and the most the browser's canvas can be trusted to hold. */
+const COPY_SCALE = 2;
+const COPY_MAX_SIDE = 16384;
+const COPY_MAX_AREA = 16384 * 4096;
+const COPY_TIMEOUT_MS = 15_000;
+
+interface CopyShot {
+  blob: Blob;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  scale: number;
+}
+
 export function mountCanvas(options: CanvasOptions): CanvasHandle {
   const { host, t, api } = options;
   const doc = host.ownerDocument;
@@ -212,6 +233,8 @@ export function mountCanvas(options: CanvasOptions): CanvasHandle {
   const zoomIn = button(t("zoomIn"), "plus", () => zoomStep(1), "dc-btn dc-icon");
   const fitButton = button(t("fit"), "fit", () => fit(), "dc-btn dc-icon");
   const guidesButton = button(t("guides"), "grid", () => setGuides(!guides), "dc-btn dc-icon");
+  const copyButton = button(t("copyAsImage"), "image", () => copySelection(), "dc-btn dc-icon");
+  copyButton.disabled = true;
   const status = el("span", "dc-status");
   const newButton = button(t("newDesign"), "sparkles", () => openNewDesign(), "dc-btn");
   const sideButton = button(t("comments"), "panel", () => toggleSide("comments"), "dc-btn");
@@ -226,6 +249,7 @@ export function mountCanvas(options: CanvasOptions): CanvasHandle {
     zoomIn,
     fitButton,
     guidesButton,
+    copyButton,
     el("span", "dc-spacer"),
     status,
     newButton,
@@ -322,6 +346,12 @@ export function mountCanvas(options: CanvasOptions): CanvasHandle {
   let modal: HTMLDivElement | null = null;
   let toastTimer: ReturnType<typeof setTimeout> | null = null;
   let layoutQueued = false;
+  /** What the Move tool has selected, across artboards. */
+  let selection: SelectionItem[] = [];
+  /** Renders in flight, by id; each waits for its artboard's image. */
+  const captures = new Map<string, { board: Board; resolve: (shot: CopyShot) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+  let captureSeq = 0;
+  let contextMenu: HTMLDivElement | null = null;
 
   // ---- Small helpers -----------------------------------------------------------------------
 
@@ -359,6 +389,213 @@ export function mountCanvas(options: CanvasOptions): CanvasHandle {
       width: rect.width * view.zoom,
       height: rect.height * view.zoom,
     };
+  }
+
+  // ---- Selection ---------------------------------------------------------------------------
+
+  function sameItem(a: SelectionItem, b: SelectionItem): boolean {
+    return a.kind === b.kind && a.boardId === b.boardId && (a.kind === "board" || (b.kind === "element" && a.dcId === b.dcId));
+  }
+
+  function dcIdsOf(board: Board): string[] {
+    return selection.flatMap((item) => (item.kind === "element" && item.boardId === board.view.id ? [item.dcId] : []));
+  }
+
+  function sendSelection(board: Board): void {
+    post(board, { type: "selection", dcIds: dcIdsOf(board) });
+  }
+
+  function renderSelection(): void {
+    for (const board of boards.values()) {
+      board.wrap.classList.toggle("dc-selected", selection.some((item) => item.kind === "board" && item.boardId === board.view.id));
+      if (board.ready) sendSelection(board);
+    }
+    copyButton.disabled = selection.length === 0;
+  }
+
+  function selectOnly(item: SelectionItem): void {
+    selection = [item];
+    renderSelection();
+  }
+
+  function toggleSelected(item: SelectionItem): void {
+    selection = selection.some((other) => sameItem(other, item)) ? selection.filter((other) => !sameItem(other, item)) : [...selection, item];
+    renderSelection();
+  }
+
+  function clearSelection(): void {
+    closeContextMenu();
+    selection = [];
+    renderSelection();
+  }
+
+  /** A removed or reloaded artboard takes its components out of the selection, and ends renders waiting on it. */
+  function dropBoard(boardId: string): void {
+    for (const [id, capture] of captures) {
+      if (capture.board.view.id !== boardId) continue;
+      clearTimeout(capture.timer);
+      captures.delete(id);
+      capture.reject(new CopyNotice(t("copyReloaded")));
+    }
+    const kept = selection.filter((item) => item.boardId !== boardId);
+    if (kept.length === selection.length) return;
+    selection = kept;
+    renderSelection();
+  }
+
+  /** An element counts as inside the selection when it, or the artboard holding it, is selected. */
+  function inSelection(item: SelectionItem): boolean {
+    return selection.some((other) => sameItem(other, item) || (item.kind === "element" && other.kind === "board" && other.boardId === item.boardId));
+  }
+
+  // ---- Copy as image -----------------------------------------------------------------------
+
+  function openContextMenu(x: number, y: number): void {
+    closeContextMenu();
+    const node = el("div", "dc-menu dc-row-menu");
+    node.setAttribute("role", "menu");
+    node.dataset.testid = "design-canvas-context-menu";
+    node.addEventListener("pointerdown", (event) => event.stopPropagation());
+    node.addEventListener("keydown", (event) => {
+      event.stopPropagation();
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeContextMenu();
+        root.focus({ preventScroll: true });
+      }
+    });
+    const pick = el("button", "dc-menu-pick");
+    pick.type = "button";
+    pick.setAttribute("role", "menuitem");
+    const mark = el("span", "dc-menu-icon");
+    mark.innerHTML = icon("image");
+    pick.append(mark, el("span", "dc-menu-title", t("copyAsImage")));
+    pick.addEventListener("click", (event) => {
+      event.stopPropagation();
+      closeContextMenu();
+      copySelection();
+    });
+    const row = el("div", "dc-menu-item");
+    row.append(pick);
+    node.append(row);
+    viewport.append(node);
+    contextMenu = node;
+    const { width, height } = viewportSize();
+    node.style.left = `${Math.max(4, Math.min(x, width - node.offsetWidth - 4))}px`;
+    node.style.top = `${Math.max(4, Math.min(y, height - node.offsetHeight - 4))}px`;
+    pick.focus();
+  }
+
+  function closeContextMenu(): void {
+    contextMenu?.remove();
+    contextMenu = null;
+  }
+
+  /** A right-click: what was clicked becomes the selection unless it is part of it already. */
+  function showContext(item: SelectionItem, x: number, y: number): void {
+    if (mode !== "move") return;
+    if (!inSelection(item)) selectOnly(item);
+    openContextMenu(x, y);
+  }
+
+  function captureOne(board: Board, item: SelectionItem): Promise<CopyShot> {
+    const id = `${++captureSeq}-${Math.random().toString(36).slice(2)}`;
+    return new Promise<CopyShot>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        captures.delete(id);
+        reject(new CopyNotice(t("copyTimeout")));
+      }, COPY_TIMEOUT_MS);
+      captures.set(id, { board, resolve, reject, timer });
+      post(board, {
+        type: "capture",
+        id,
+        kind: item.kind === "board" ? "page" : "element",
+        ...(item.kind === "element" ? { dcId: item.dcId } : {}),
+        width: board.view.width,
+        height: board.height,
+        scale: COPY_SCALE,
+        maxSide: COPY_MAX_SIDE,
+        maxArea: COPY_MAX_AREA,
+      });
+    });
+  }
+
+  function canvasBlob(canvas: HTMLCanvasElement): Promise<Blob> {
+    return new Promise((resolve, reject) => canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("The image was too large to draw"))), "image/png"));
+  }
+
+  /** One PNG of the selection; `info` learns the smallest scale used and what was skipped. */
+  function composeSelection(info: { scale: number; skipped: string[] }): Promise<Blob> {
+    const wholeBoards = new Set(selection.flatMap((item) => (item.kind === "board" ? [item.boardId] : [])));
+    // A component inside a selected artboard is already in its image.
+    const items = selection.filter((item) => item.kind === "board" || !wholeBoards.has(item.boardId));
+    const jobs: Array<{ board: Board; item: SelectionItem }> = [];
+    for (const item of items) {
+      const board = boards.get(item.boardId);
+      if (board?.frame && !board.error && board.ready && board.placed) jobs.push({ board, item });
+      else {
+        const name = board?.view.title ?? item.boardId;
+        if (!info.skipped.includes(name)) info.skipped.push(name);
+      }
+    }
+    if (jobs.length === 0) return Promise.reject(new CopyNotice(t("copyNothingReady")));
+    return (async () => {
+      const shots = await Promise.all(jobs.map((job) => captureOne(job.board, job.item)));
+      info.scale = Math.min(...shots.map((shot) => shot.scale));
+      if (shots.length === 1) return shots[0]!.blob;
+      // Where each image sits on the canvas, artboards under components
+      const placed = shots.map((shot, i) => {
+        const at = jobs[i]!.board.placed!;
+        return { shot, kind: jobs[i]!.item.kind, x: at.x + shot.x, y: at.y + shot.y, width: shot.width, height: shot.height };
+      });
+      const left = Math.min(...placed.map((p) => p.x));
+      const top = Math.min(...placed.map((p) => p.y));
+      const width = Math.max(...placed.map((p) => p.x + p.width)) - left;
+      const height = Math.max(...placed.map((p) => p.y + p.height)) - top;
+      const scale = Math.min(COPY_SCALE, COPY_MAX_SIDE / Math.max(width, height), Math.sqrt(COPY_MAX_AREA / (width * height)));
+      info.scale = Math.min(info.scale, scale);
+      const canvas = el("canvas");
+      canvas.width = Math.max(1, Math.round(width * scale));
+      canvas.height = Math.max(1, Math.round(height * scale));
+      const ctx = canvas.getContext("2d");
+      if (!ctx) throw new Error("The image was too large to draw");
+      for (const kind of ["board", "element"] as const) {
+        for (const p of placed.filter((candidate) => candidate.kind === kind)) {
+          const bitmap = await win!.createImageBitmap(p.shot.blob);
+          ctx.drawImage(bitmap, (p.x - left) * scale, (p.y - top) * scale, p.width * scale, p.height * scale);
+          bitmap.close();
+        }
+      }
+      return canvasBlob(canvas);
+    })();
+  }
+
+  /** Runs inside the click: the clipboard write needs the user's activation, so it starts before any render finishes. */
+  function copySelection(): void {
+    if (selection.length === 0) return;
+    const clipboard = win!.navigator.clipboard;
+    if (!clipboard?.write || typeof win!.ClipboardItem === "undefined") {
+      toast(t("copyUnsupported"));
+      return;
+    }
+    const info = { scale: COPY_SCALE, skipped: [] as string[] };
+    let renderError: unknown = null;
+    const render = composeSelection(info).catch((error) => {
+      renderError = error;
+      throw error;
+    });
+    const failed = (error: unknown) => {
+      const reason = renderError ?? error;
+      toast(reason instanceof CopyNotice ? reason.message : t("copyFailed", { error: describe(reason) }));
+    };
+    try {
+      void clipboard.write([new win!.ClipboardItem({ "image/png": render })]).then(() => {
+        const done = info.scale < COPY_SCALE ? t("copiedScaled", { percent: String(Math.round(info.scale * 100)) }) : t("copied");
+        toast(info.skipped.length ? `${done} · ${t("copySkipped", { names: info.skipped.join(", ") })}` : done);
+      }, failed);
+    } catch (error) {
+      failed(error);
+    }
   }
 
   // ---- View --------------------------------------------------------------------------------
@@ -417,6 +654,7 @@ export function mountCanvas(options: CanvasOptions): CanvasHandle {
   }
 
   function wheel(deltaX: number, deltaY: number, zoom: boolean, px: number, py: number): void {
+    closeContextMenu();
     if (zoom) {
       const step = Math.max(-60, Math.min(60, deltaY));
       setView(zoomAt(view, view.zoom * Math.exp(-step * 0.01), px, py), true);
@@ -478,6 +716,7 @@ export function mountCanvas(options: CanvasOptions): CanvasHandle {
   }
 
   function loadFrame(board: Board): void {
+    dropBoard(board.view.id);
     board.error?.remove();
     board.error = null;
     if (board.view.html === null) {
@@ -524,6 +763,12 @@ export function mountCanvas(options: CanvasOptions): CanvasHandle {
       badge: null,
     };
     label.addEventListener("pointerdown", (event) => startBoardDrag(board, event));
+    label.addEventListener("contextmenu", (event) => {
+      if (mode !== "move") return;
+      event.preventDefault();
+      const at = viewport.getBoundingClientRect();
+      showContext({ kind: "board", boardId: board.view.id }, event.clientX - at.left, event.clientY - at.top);
+    });
     boardLabel(board);
     loadFrame(board);
     return board;
@@ -535,6 +780,7 @@ export function mountCanvas(options: CanvasOptions): CanvasHandle {
       if (!wanted.has(id)) {
         board.wrap.remove();
         boards.delete(id);
+        dropBoard(id);
       }
     }
     for (const artboard of next.artboards) {
@@ -836,7 +1082,9 @@ export function mountCanvas(options: CanvasOptions): CanvasHandle {
   // ---- Modes -------------------------------------------------------------------------------
 
   function setMode(next: CanvasMode): void {
+    const changed = next !== mode;
     mode = next;
+    if (changed) clearSelection();
     root.dataset.mode = mode;
     for (const [name, node] of tools) node.classList.toggle("dc-on", name === mode);
     // Hand: the artboards stop taking the pointer, so a drag anywhere pans
@@ -881,10 +1129,12 @@ export function mountCanvas(options: CanvasOptions): CanvasHandle {
     else if (!meta && !shift && key === "c") setMode("comment");
     else if (!meta && !shift && key === "p") setMode("preview");
     else if (key === "Escape") {
-      if (menu) closeMenu();
+      if (contextMenu) closeContextMenu();
+      else if (menu) closeMenu();
       else if (modal) closeModal();
       else if (popover) closePopover();
       else if (mode === "comment") setMode("move");
+      else if (selection.length > 0) clearSelection();
       else return false;
     } else return false;
     return true;
@@ -1014,7 +1264,7 @@ export function mountCanvas(options: CanvasOptions): CanvasHandle {
     queueLayout();
   }
 
-  /** In the Move tool an artboard's title drags the artboard; elsewhere a click on it centres it. */
+  /** In the Move tool an artboard's title drags the artboard and a click selects it; elsewhere a click on it centres it. */
   function startBoardDrag(board: Board, event: PointerEvent): void {
     if (event.button !== 0) return;
     event.stopPropagation();
@@ -1040,13 +1290,18 @@ export function mountCanvas(options: CanvasOptions): CanvasHandle {
       board.wrap.style.top = `${board.placed.y}px`;
       positionPopover();
     };
-    const up = () => {
+    const up = (done: PointerEvent) => {
       board.label.removeEventListener("pointermove", move);
       board.label.removeEventListener("pointerup", up);
       board.label.removeEventListener("pointercancel", up);
       if (mode !== "hand" && !spaceHeld) world.classList.remove("dc-panning");
       if (!moved) {
-        focusBoard(board.view.id);
+        // A click selects the artboard (Shift adds it to the selection)
+        if (done.type === "pointerup") {
+          const item: SelectionItem = { kind: "board", boardId: board.view.id };
+          if (done.shiftKey) toggleSelected(item);
+          else selectOnly(item);
+        }
         return;
       }
       if (!board.placed || !slug) return;
@@ -1356,6 +1611,7 @@ export function mountCanvas(options: CanvasOptions): CanvasHandle {
   // ---- Designs -----------------------------------------------------------------------------
 
   function clearBoards(): void {
+    for (const id of boards.keys()) dropBoard(id);
     for (const board of boards.values()) board.wrap.remove();
     boards.clear();
     closePopover();
@@ -1828,6 +2084,7 @@ export function mountCanvas(options: CanvasOptions): CanvasHandle {
     tweaksRendered = "";
     tweakShown = null;
     tweakHoverNames = [];
+    clearSelection();
     clearBoards();
     userMoved = false;
     renderPicker();
@@ -1934,6 +2191,7 @@ export function mountCanvas(options: CanvasOptions): CanvasHandle {
         sendTweakScan(board);
         if (tweakShown) post(board, { type: "tweak-show", name: tweakShown });
         sendPins();
+        sendSelection(board);
         resize(board, message.height);
         break;
       case "size":
@@ -1983,6 +2241,36 @@ export function mountCanvas(options: CanvasOptions): CanvasHandle {
         unmovableToastAt = now;
         break;
       }
+      case "select": {
+        closeContextMenu();
+        const item: SelectionItem | null = message.dcId ? { kind: "element", boardId: board.view.id, dcId: message.dcId } : null;
+        if (message.shift) {
+          if (item) toggleSelected(item);
+        } else if (item) selectOnly(item);
+        else clearSelection();
+        break;
+      }
+      case "selection-lost":
+        renderSelection();
+        break;
+      case "context": {
+        const at = toScreen(board.view.id, { x: message.x, y: message.y, width: 0, height: 0 });
+        if (at) showContext(message.dcId ? { kind: "element", boardId: board.view.id, dcId: message.dcId } : { kind: "board", boardId: board.view.id }, at.x, at.y);
+        break;
+      }
+      case "pointer":
+        closeContextMenu();
+        break;
+      case "captured":
+      case "capture-failed": {
+        const capture = captures.get(message.id);
+        if (!capture || capture.board !== board) break;
+        clearTimeout(capture.timer);
+        captures.delete(message.id);
+        if (message.type === "captured") capture.resolve(message);
+        else capture.reject(new Error(message.reason));
+        break;
+      }
       case "navigate": {
         const target = design?.artboards.find((artboard) => artboard.file === message.file);
         if (target) focusBoard(target.id);
@@ -2012,13 +2300,13 @@ export function mountCanvas(options: CanvasOptions): CanvasHandle {
     { passive: false },
   );
 
-  let drag: { x: number; y: number; view: View; pointer: number } | null = null;
+  let drag: { x: number; y: number; view: View; pointer: number; background: boolean } | null = null;
   viewport.addEventListener("pointerdown", (event) => {
     const onBackground = event.target === viewport || event.target === world;
     if (!(onBackground || spaceHeld || mode === "hand" || event.button === 1)) return;
     if (event.button !== 0 && event.button !== 1) return;
     if (popover && onBackground && !spaceHeld && mode !== "hand") closePopover();
-    drag = { x: event.clientX, y: event.clientY, view, pointer: event.pointerId };
+    drag = { x: event.clientX, y: event.clientY, view, pointer: event.pointerId, background: onBackground && mode === "move" && !spaceHeld && event.button === 0 };
     viewport.setPointerCapture(event.pointerId);
     viewport.classList.add("dc-grabbing");
     world.classList.add("dc-panning");
@@ -2040,7 +2328,10 @@ export function mountCanvas(options: CanvasOptions): CanvasHandle {
   });
   const endDrag = (event: PointerEvent) => {
     if (!drag || event.pointerId !== drag.pointer) return;
+    // A click on the empty canvas (not a pan) clears the selection
+    const clicked = drag.background && Math.abs(event.clientX - drag.x) + Math.abs(event.clientY - drag.y) < 3;
     drag = null;
+    if (clicked) clearSelection();
     viewport.classList.remove("dc-grabbing");
     if (!spaceHeld && mode !== "hand") world.classList.remove("dc-panning");
   };
@@ -2073,12 +2364,14 @@ export function mountCanvas(options: CanvasOptions): CanvasHandle {
   // A press anywhere else, or into an artboard (which takes focus), closes the design menu.
   const closeMenuOutside = (event: PointerEvent) => {
     const target = event.target as Node;
+    if (contextMenu && !contextMenu.contains(target)) closeContextMenu();
     if (rowMenu && !rowMenu.node.contains(target) && !rowMenu.anchor.contains(target)) closeRowMenu();
     if (rowMenu?.node.contains(target)) return;
     if (menu && !menu.contains(target) && !picker.contains(target)) closeMenu();
   };
   doc.addEventListener("pointerdown", closeMenuOutside, true);
   win.addEventListener("blur", closeMenu);
+  win.addEventListener("blur", closeContextMenu);
   // A slider dragged past its row keeps the outlines until it is let go.
   const endTweakDrag = (event: PointerEvent) => {
     if (!tweakDragging) return;
@@ -2143,6 +2436,8 @@ export function mountCanvas(options: CanvasOptions): CanvasHandle {
       win.removeEventListener("message", onMessage);
       doc.removeEventListener("pointerdown", closeMenuOutside, true);
       win.removeEventListener("blur", closeMenu);
+      win.removeEventListener("blur", closeContextMenu);
+      for (const capture of captures.values()) clearTimeout(capture.timer);
       win.removeEventListener("pointerup", endTweakDrag);
       root.remove();
     },

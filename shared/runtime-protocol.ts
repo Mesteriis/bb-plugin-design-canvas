@@ -48,7 +48,22 @@ export type ToRuntime =
   /** CSS custom properties on the page's root; "" removes one so the page's own value applies. */
   | { mark: typeof PROTOCOL_MARK; type: "tweaks"; vars: Record<string, string> }
   /** The pointer is over the canvas, not this page; iframes do not always hear it leave. */
-  | { mark: typeof PROTOCOL_MARK; type: "clear-hover" };
+  | { mark: typeof PROTOCOL_MARK; type: "clear-hover" }
+  /** The named elements of this page that are in the canvas's selection, to draw boxes on. */
+  | { mark: typeof PROTOCOL_MARK; type: "selection"; dcIds: string[] }
+  /** Draw the page (or one named element) to a PNG and post it back as `captured`. */
+  | {
+      mark: typeof PROTOCOL_MARK;
+      type: "capture";
+      id: string;
+      kind: "page" | "element";
+      dcId?: string;
+      width: number;
+      height: number;
+      scale: number;
+      maxSide: number;
+      maxArea: number;
+    };
 
 /** A message to the runtime before the marker is added. */
 export type RuntimeCommand = ToRuntime extends infer Message
@@ -98,5 +113,26 @@ export const fromRuntimeSchema = z.discriminatedUnion("type", [
   z.object({ ...base, type: z.literal("editing"), on: z.boolean() }),
   /** A click on a link to another page of the design, e.g. `checkout.html`. */
   z.object({ ...base, type: z.literal("navigate"), file: z.string().max(200) }),
+  /** A press in the Move tool; `dcId` is the named element under it, null for the page. */
+  z.object({ ...base, type: z.literal("select"), dcId: z.string().min(1).max(120).nullable(), shift: z.boolean() }),
+  /** The page dropped its own selection (tool change, text edit, popover closed); the canvas sends its list again. */
+  z.object({ ...base, type: z.literal("selection-lost") }),
+  /** A right-click in the Move tool, in the page's viewport pixels. */
+  z.object({ ...base, type: z.literal("context"), dcId: z.string().min(1).max(120).nullable(), x: z.number(), y: z.number() }),
+  /** Any press inside the page, so the canvas can close its context menu. */
+  z.object({ ...base, type: z.literal("pointer") }),
+  /** The answer to `capture`: a PNG of `width` x `height` page pixels at `x`,`y`, drawn at `scale`. */
+  z.object({
+    ...base,
+    type: z.literal("captured"),
+    id: z.string().max(64),
+    blob: z.instanceof(Blob),
+    x: z.number(),
+    y: z.number(),
+    width: z.number(),
+    height: z.number(),
+    scale: z.number(),
+  }),
+  z.object({ ...base, type: z.literal("capture-failed"), id: z.string().max(64), reason: z.string().max(300) }),
 ]);
 export type FromRuntime = z.infer<typeof fromRuntimeSchema>;

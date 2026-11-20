@@ -29,6 +29,11 @@ On the canvas:
 - **Move** (V) selects the nearest element the agent named and drags it; arrow keys nudge it 1 px, 10 px with
   Shift. Drag an artboard by its title. Double-click text to edit it in place. Ctrl/Cmd+Z undoes, Ctrl/Cmd+Shift+Z
   redoes.
+  Clicking an artboard's title selects the artboard (it no longer centres the view in Move); Shift-click adds or
+  removes artboards and elements, across artboards. Escape or a click on the empty canvas clears the selection.
+  **Copy as image** (toolbar button, or right-click an artboard, its title or an element) puts the selection on the
+  clipboard as one PNG at 2x: one item alone, or several placed as they sit on the canvas on a transparent
+  background. Very large selections are scaled down to fit the browser's canvas limit, and the toast says so.
 - **Hand** (H) pans with a drag anywhere; hold Space for it in any tool. **Preview** (P) follows links between
   artboards. **Comment** (C) highlights the element under the pointer; click to comment, Alt+click for the exact
   element, Ctrl/Cmd+Enter to add.
@@ -72,7 +77,7 @@ The canvas the user sees is the original's. Where bb needed something else:
   work is in the RPCs.
 - **Added:** `client/page.tsx` (a design at full size), `client/api.ts` and `client/canvas-host.ts` (the shared
   glue between the canvas and bb).
-- **Small changes inside the original's code:** `client/canvas.ts` and `client/styles.ts` (artboard labels that
+- **Small changes inside the original's code:** `client/canvas.ts`, `client/runtime.ts` and `client/styles.ts` (artboard labels that
   fit the artboard, and the other workspaces' designs in the menu and on the empty card), `client/styles.ts`
   (bb's theme variables instead of paseo's colors), `client/i18n.ts`, `client/icons.ts` and the two locale files
   (bb wording, a few new strings and icons), `server/tools.ts` and `server/guide.ts` (bb wording), and
