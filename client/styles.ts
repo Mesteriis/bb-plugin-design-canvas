@@ -240,6 +240,10 @@ export const CANVAS_CSS = `
 .dc-side-foot { padding: 10px; border-top: 1px solid var(--dc-border); display: flex; flex-direction: column; gap: 6px; }
 .dc-side-foot .dc-btn { justify-content: center; }
 .dc-check { display: flex; gap: 6px; align-items: center; color: var(--dc-muted); font-size: 12px; cursor: pointer; }
+.dc-copy-preview { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 27; display: grid;
+  grid-template-columns: 1fr auto; align-items: center; gap: 8px; padding: 8px 8px 10px 12px; border-radius: 10px; max-width: min(480px, 90%);
+  background: var(--dc-surface); border: 1px solid var(--dc-border); box-shadow: 0 12px 32px rgba(0,0,0,.18); }
+.dc-copy-preview img { grid-column: 1 / -1; max-width: 100%; max-height: 50vh; object-fit: contain; justify-self: center; }
 .dc-toast { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 30; padding: 8px 14px; border-radius: 8px;
   background: var(--dc-fg); color: var(--dc-bg); box-shadow: 0 6px 18px rgba(0,0,0,.25); max-width: 80%; }
 .dc-muted { color: var(--dc-muted); }

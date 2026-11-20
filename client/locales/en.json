@@ -108,5 +108,5 @@
   "copyNothingReady": "Nothing selected is loaded yet",
   "copyTimeout": "The artboard didn't answer",
   "copyReloaded": "The artboard reloaded while copying",
-  "savedAsFile": "Saved as a PNG: this address can't use the clipboard"
+  "copyPreviewHint": "Right-click the image, then Copy Image"
 }

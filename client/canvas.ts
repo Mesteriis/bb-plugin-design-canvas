@@ -21,7 +21,6 @@ import {
   type TweakValues,
   usesVariable,
 } from "../shared/tweaks";
-import { experimental_copyToClipboard, experimental_saveFile } from "@get-bb/plugin-sdk/app";
 import { fileToBase64 } from "./files";
 import { icon, type IconName } from "./icons";
 import {
@@ -586,37 +585,45 @@ export function mountCanvas(options: CanvasOptions): CanvasHandle {
       const reason = renderError ?? error;
       toast(reason instanceof CopyNotice ? reason.message : t("copyFailed", { error: describe(reason) }));
     };
-    const report = (key: "copied" | "savedAsFile") => {
-      const done =
-        key === "copied" && info.scale < COPY_SCALE ? t("copiedScaled", { percent: String(Math.round(info.scale * 100)) }) : t(key);
-      toast(info.skipped.length ? `${done} · ${t("copySkipped", { names: info.skipped.join(", ") })}` : done);
-    };
     const clipboard = win!.navigator.clipboard;
     if (clipboard?.write && typeof win!.ClipboardItem !== "undefined") {
       try {
-        void clipboard.write([new win!.ClipboardItem({ "image/png": render })]).then(() => report("copied"), failed);
+        void clipboard.write([new win!.ClipboardItem({ "image/png": render })]).then(() => {
+          const done = info.scale < COPY_SCALE ? t("copiedScaled", { percent: String(Math.round(info.scale * 100)) }) : t("copied");
+          toast(info.skipped.length ? `${done} · ${t("copySkipped", { names: info.skipped.join(", ") })}` : done);
+        }, failed);
       } catch (error) {
         failed(error);
       }
       return;
     }
-    // ponytail: browsers hide the image clipboard outside a secure origin (bb over plain http on a LAN IP).
-    // There bb's own copy path carries the PNG as an <img> in HTML, which rich editors paste as an image;
-    // if that fails too, the PNG downloads. Upgrade: a native image write in the SDK, or bb over https.
-    void render.then(async (blob) => {
-      const html = `<img src="${await blobToDataUrl(blob)}" alt="${t("copyAsImage")}">`;
-      if (await experimental_copyToClipboard({ text: "", html })) return report("copied");
-      if ((await experimental_saveFile({ fileName: `${slug ?? "design"}.png`, blob })) === "started") report("savedAsFile");
-    }, failed);
+    // ponytail: browsers hide the image clipboard outside a secure origin (bb over plain http on a LAN IP),
+    // and bb's own copy path carries only text and HTML. There the image opens in a preview, where the native
+    // right-click "Copy Image" (bb Desktop and browsers alike) puts the real PNG on the clipboard.
+    // Upgrade: an image write in the SDK's copy path, or bb on a secure origin.
+    void render.then((blob) => showCopyPreview(blob), failed);
   }
 
-  function blobToDataUrl(blob: Blob): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const reader = new win!.FileReader();
-      reader.onload = () => resolve(String(reader.result));
-      reader.onerror = () => reject(reader.error);
-      reader.readAsDataURL(blob);
-    });
+  let copyPreview: { node: HTMLElement; url: string } | null = null;
+
+  function closeCopyPreview(): void {
+    if (!copyPreview) return;
+    copyPreview.node.remove();
+    URL.revokeObjectURL(copyPreview.url);
+    copyPreview = null;
+  }
+
+  function showCopyPreview(blob: Blob): void {
+    closeCopyPreview();
+    const url = URL.createObjectURL(blob);
+    const node = el("div", "dc-copy-preview");
+    const image = el("img");
+    image.src = url;
+    image.alt = t("copyAsImage");
+    const close = button(t("close"), "close", closeCopyPreview, "dc-btn dc-icon");
+    node.append(el("div", "dc-copy-preview-head", t("copyPreviewHint")), close, image);
+    viewport.append(node);
+    copyPreview = { node, url };
   }
 
   // ---- View --------------------------------------------------------------------------------
@@ -1151,6 +1158,7 @@ export function mountCanvas(options: CanvasOptions): CanvasHandle {
     else if (!meta && !shift && key === "p") setMode("preview");
     else if (key === "Escape") {
       if (contextMenu) closeContextMenu();
+      else if (copyPreview) closeCopyPreview();
       else if (menu) closeMenu();
       else if (modal) closeModal();
       else if (popover) closePopover();
@@ -2386,6 +2394,7 @@ export function mountCanvas(options: CanvasOptions): CanvasHandle {
   const closeMenuOutside = (event: PointerEvent) => {
     const target = event.target as Node;
     if (contextMenu && !contextMenu.contains(target)) closeContextMenu();
+    if (copyPreview && !copyPreview.node.contains(target)) closeCopyPreview();
     if (rowMenu && !rowMenu.node.contains(target) && !rowMenu.anchor.contains(target)) closeRowMenu();
     if (rowMenu?.node.contains(target)) return;
     if (menu && !menu.contains(target) && !picker.contains(target)) closeMenu();
@@ -2450,6 +2459,7 @@ export function mountCanvas(options: CanvasOptions): CanvasHandle {
     },
     destroy() {
       destroyed = true;
+      closeCopyPreview();
       for (const key of [...pendingMoves.keys()]) void flush(key);
       clearInterval(timer);
       if (toastTimer) clearTimeout(toastTimer);
