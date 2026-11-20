@@ -51,5 +51,11 @@
     "vaul": "^1.1.2"
   },
   "license": "MIT",
-  "description": "Design canvas for bb: a port of the paseo design-canvas plugin."
+  "description": "Design canvas for bb, ported from 961853266hyt's Design canvas plugin for paseo (https://github.com/961853266hyt/paseo-plugins).",
+  "contributors": [
+    {
+      "name": "961853266hyt",
+      "url": "https://github.com/961853266hyt"
+    }
+  ]
 }

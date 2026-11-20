@@ -1,15 +1,25 @@
 # Design canvas for bb
 
 Where you and an agent design together. The agent draws designs as HTML artboards. You look at them side by
-side, move elements, fix text, tune values and point at what should change, and the agent revises. Designs are
+side, move elements, fix text, tune values, point at what should change, and the agent revises. Designs are
 plain files in the workspace's `design/` folder.
 
-This is a port of **[Design canvas](https://paseo.sh/plugins/961853266hyt/design-canvas) for paseo**, version 0.4.0,
-by **961853266hyt** (repository [961853266hyt/paseo-plugins](https://github.com/961853266hyt/paseo-plugins), `plugins/design-canvas`).
-The canvas, the in-frame runtime, the design store, the HTML patching, the zip import and export and the agent
-tools are their code, kept as it was wherever bb allowed. The idea, the interaction design and nearly all of the
-work are theirs. It is used under the MIT license; the original copyright notice is in [LICENSE](LICENSE), and
-this port is distributed under the same terms.
+![Three artboards with numbered comment pins and the comments panel](docs/screenshots/comments.png)
+
+## Credit
+
+**This plugin is the work of [961853266hyt](https://github.com/961853266hyt).** It is a port of their
+**[Design canvas](https://paseo.sh/plugins/961853266hyt/design-canvas) plugin for paseo** (version 0.4.0, source in
+[961853266hyt/paseo-plugins](https://github.com/961853266hyt/paseo-plugins), `plugins/design-canvas`).
+
+The idea, the interaction design and nearly all of the code are theirs: the canvas, the in-frame runtime, the
+design store, the HTML patching, comments, tweaks, the zip import and export, and the agent tools. They are kept
+as they were wherever bb allowed. This port adds a bb host layer around their work, plus copy as image (below).
+If you like this plugin, the credit goes to them: star their repository and try the original in
+[paseo](https://paseo.sh).
+
+Used under the MIT license. The original copyright notice is in [LICENSE](LICENSE), and this port is
+distributed under the same terms.
 
 ## Using it
 
@@ -36,6 +46,8 @@ On the canvas:
   **Copy canvas as image** does the same for every artboard. Very large images are scaled down to fit the
   browser's canvas limit, and the toast says so. On a plain-http address, where the browser has no image
   clipboard, the image opens in a preview instead: right-click it and choose Copy Image.
+
+  ![An artboard and a component selected across artboards, with the Copy as image menu](docs/screenshots/copy-as-image.png)
 - **Hand** (H) pans with a drag anywhere; hold Space for it in any tool. **Preview** (P) follows links between
   artboards. **Comment** (C) highlights the element under the pointer; click to comment, Alt+click for the exact
   element, Ctrl/Cmd+Enter to add.
@@ -43,6 +55,8 @@ On the canvas:
   agent resolves each with a line on what it changed.
 - **Tweaks** shows the controls the agent declared, each driving a CSS variable. Every artboard follows as you
   drag, and the values are saved to `tweaks.css`.
+
+  ![The Tweaks panel with an accent color and a corner radius slider](docs/screenshots/tweaks.png)
 - Zoom with Ctrl/Cmd+scroll or the buttons, fit with Ctrl/Cmd+0, layout grid with Shift+G. Zoomed out, an
   artboard's label shortens to the artboard's width and shows in full on hover.
 - A design's ⋯ menu renames, exports (zip) or deletes it. A deleted design moves to `design/.trash/`.
@@ -79,6 +93,9 @@ The canvas the user sees is the original's. Where bb needed something else:
   work is in the RPCs.
 - **Added:** `client/page.tsx` (a design at full size), `client/api.ts` and `client/canvas-host.ts` (the shared
   glue between the canvas and bb).
+- **Added in this port, not in the original:** selecting artboards and several elements in Move, and copy as
+  image (right-click menu, the toolbar's whole-canvas copy, and the preview on plain-http addresses), in
+  `client/canvas.ts`, `client/runtime.ts`, `shared/runtime-protocol.ts`, with tests in `test/copy-image/`.
 - **Small changes inside the original's code:** `client/canvas.ts`, `client/runtime.ts` and `client/styles.ts` (artboard labels that
   fit the artboard, and the other workspaces' designs in the menu and on the empty card), `client/styles.ts`
   (bb's theme variables instead of paseo's colors), `client/i18n.ts`, `client/icons.ts` and the two locale files
