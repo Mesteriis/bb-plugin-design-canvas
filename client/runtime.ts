@@ -865,10 +865,9 @@ export const RUNTIME_SOURCE = String.raw`(function () {
         var el = cmd.dcId ? document.querySelector('[data-dc-id="' + CSS.escape(cmd.dcId) + '"]') : null;
         if (!el) return fail("missing");
         rect = pageRect(el);
-        H = Math.max(H, Math.min(20000, Math.ceil(pageHeight())));
       }
-      var x0 = Math.max(0, rect.x), y0 = Math.max(0, rect.y);
-      var w = Math.min(W, rect.x + rect.width) - x0, h = Math.min(H, rect.y + rect.height) - y0;
+      // The crop is the item's own box, even where it crosses the page's edge (the part outside the page is transparent)
+      var x0 = rect.x, y0 = rect.y, w = rect.width, h = rect.height;
       if (!(w > 0 && h > 0)) return fail("empty");
       var clone = d.cloneNode(true);
       [].slice.call(clone.querySelectorAll('design-canvas-overlay,script,style[data-dc-cursor],meta[http-equiv="Content-Security-Policy"]'))
@@ -880,29 +879,43 @@ export const RUNTIME_SOURCE = String.raw`(function () {
       var fromBody = bs && hs.backgroundColor === "rgba(0, 0, 0, 0)" && hs.backgroundImage === "none";
       clone.style.background = (fromBody ? bs : hs).background;
       clone.style.minHeight = H + "px";
-      // The real root never collapses margins with its children; flow-root keeps that in the SVG
-      clone.style.display = "flow-root";
+      // The real root never collapses margins with its children; flow-root keeps that in the SVG.
+      // Any other display (grid, flex) is the page's own layout and stays.
+      if (hs.display === "block") clone.style.display = "flow-root";
       var cloneBody = clone.querySelector("body");
       if (fromBody && cloneBody) cloneBody.style.background = "none";
       var xml = new XMLSerializer().serializeToString(clone).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "");
-      var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + W + '" height="' + H + '" style="font-size:' + hs.fontSize + '">' +
-        '<foreignObject x="0" y="0" width="' + W + '" height="' + H + '">' + xml + "</foreignObject></svg>";
-      var img = new Image();
-      img.onload = function () {
-        try {
-          var s = Math.min(cmd.scale, cmd.maxSide / Math.max(w, h), Math.sqrt(cmd.maxArea / (w * h)));
-          var canvas = document.createElement("canvas");
-          canvas.width = Math.max(1, Math.round(w * s));
-          canvas.height = Math.max(1, Math.round(h * s));
-          canvas.getContext("2d").drawImage(img, -x0 * s, -y0 * s, W * s, H * s);
+      var s = Math.min(cmd.scale, cmd.maxSide / Math.max(w, h), Math.sqrt(cmd.maxArea / (w * h)));
+      var canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(w * s));
+      canvas.height = Math.max(1, Math.round(h * s));
+      var ctx = canvas.getContext("2d");
+      // The SVG viewport is the frame's own (W x H) so vw, vh and media queries match the live page;
+      // the crop is walked in windows of that size, the page shifted under each one.
+      var tiles = [];
+      for (var ty = 0; ty < h; ty += H) for (var tx = 0; tx < w; tx += W) tiles.push({ x: tx, y: ty });
+      var draw = function (i) {
+        if (i === tiles.length) {
           canvas.toBlob(function (blob) {
             if (!blob) return fail("The image was too large to draw");
             post({ type: "captured", id: cmd.id, blob: blob, x: x0, y: y0, width: w, height: h, scale: s });
           }, "image/png");
-        } catch (e) { fail(e); }
+          return;
+        }
+        var tile = tiles[i];
+        var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + W + '" height="' + H + '" style="font-size:' + hs.fontSize + '">' +
+          '<foreignObject x="' + (-x0 - tile.x) + '" y="' + (-y0 - tile.y) + '" width="' + W + '" height="' + H + '" style="overflow:visible">' + xml + "</foreignObject></svg>";
+        var img = new Image();
+        img.onload = function () {
+          try {
+            ctx.drawImage(img, tile.x * s, tile.y * s, W * s, H * s);
+            draw(i + 1);
+          } catch (e) { fail(e); }
+        };
+        img.onerror = function () { fail("The page could not be drawn"); };
+        img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
       };
-      img.onerror = function () { fail("The page could not be drawn"); };
-      img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+      draw(0);
     } catch (e) { fail(e); }
   }
 

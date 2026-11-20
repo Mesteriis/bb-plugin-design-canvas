@@ -592,6 +592,62 @@ tests.T16 = async () => {
   }
 };
 
+const SOLO = (body, css = "") => `<!doctype html><html><head><style>${css}</style></head><body>${body}</body></html>`;
+async function soloCopy(h, html, select) {
+  await h.page.evaluate((x) => window.__fake.set("d2", "a", { html: x }), html);
+  await waitFrames(h, 1);
+  await select();
+  const toast = await copyViaButton(h);
+  return { toast, d: await readClip(h) };
+}
+
+tests.T17 = async () => {
+  // R-blocker 1: a viewport-relative component on a fixed-height artboard
+  let h = await open({ slug: "d2" });
+  let r = await soloCopy(h, SOLO('<div style="height:700px"></div><div data-dc-id="g" style="position:absolute;left:150px;top:50vh;width:100px;height:30px;background:#0f0"></div>', "body{margin:0;background:#fff}"), () => clickEl(h, "a", "g"));
+  let [c] = await pxs(h, [[100, 30]]);
+  check("T17", "50vh component on 400x300 with a 700px spacer: 200x60, green centre", r.d.w === 200 && r.d.h === 60 && near(c, [0, 255, 0, 255], 3), JSON.stringify([r, c]));
+  await save(h, "T17-vh-component.png");
+  await h.context.close();
+  // blocker 2: a component crossing the artboard's left edge
+  h = await open({ slug: "d2" });
+  r = await soloCopy(h, SOLO('<div data-dc-id="e" style="position:absolute;left:-20px;top:10px;width:120px;height:48px;background:#f00"></div>', "body{margin:0;background:#fff}"), () => clickEl(h, "a", "e", { position: { x: 90, y: 24 } }));
+  const [out, inn] = await pxs(h, [[10, 48], [100, 48]]);
+  check("T17", "component at left:-20px: 240x96, whole box red (cropped part included)", r.d.w === 240 && r.d.h === 96 && near(out, [255, 0, 0, 255], 3) && near(inn, [255, 0, 0, 255], 3), JSON.stringify([r, out, inn]));
+  await save(h, "T17-edge-component.png");
+  await h.context.close();
+  // blocker 2b: a component larger than the frame is tiled whole
+  h = await open({ slug: "d2" });
+  r = await soloCopy(h, SOLO('<div data-dc-id="big" style="position:absolute;left:0;top:0;width:900px;height:700px;background:linear-gradient(90deg,#f00,#00f)"></div>', "body{margin:0}"), () => clickEl(h, "a", "big", { position: { x: 50, y: 50 } }));
+  const [t1, t2, t3] = await pxs(h, [[10, 10], [1790, 1390], [900, 1000]]);
+  check("T17", "900x700 component on a 400x300 frame: 1800x1400, no seams or blank tiles", r.d.w === 1800 && r.d.h === 1400 && t1[3] === 255 && t2[3] === 255 && t3[3] === 255 && t1[0] > 240 && t2[2] > 240, JSON.stringify([r.d, t1, t2, t3]));
+  await h.context.close();
+  // blocker 3: a grid document root
+  h = await open({ slug: "d2" });
+  r = await soloCopy(h, SOLO("", "html{display:grid;place-items:center;height:100%;background:#fff}body{margin:0;width:50px;height:50px;background:#f00}"), () => clickTitle(h, "a"));
+  const [mid, corner] = await pxs(h, [[400, 300], [20, 20]]);
+  const live = await (await frameById(h, "a")).evaluate(() => { const r = document.body.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; });
+  check("T17", "grid html root: copy centre is red like the live frame", r.d.w === 800 && r.d.h === 600 && near(mid, [255, 0, 0, 255], 3) && near(corner, [255, 255, 255, 255], 3) && Math.abs(live[0] - 200) < 2 && Math.abs(live[1] - 150) < 2, JSON.stringify([r.d, mid, corner, live]));
+  await save(h, "T17-grid-root.png");
+  await h.context.close();
+};
+
+tests.T18 = async () => {
+  const h = await open();
+  await h.page.locator("[data-board=a] .dc-board-label").click({ button: "right", position: { x: 6, y: 6 } });
+  await h.page.waitForTimeout(200);
+  await clearToast(h);
+  await h.page.locator(`${MENU} button`).click();
+  await toastText(h);
+  let s = await state(h);
+  check("T18", "after the menu copy the artboard is selected", s.boards.join() === "a" && !s.disabled, JSON.stringify(s));
+  await h.page.keyboard.press("Escape");
+  s = await state(h);
+  check("T18", "Escape right after copying from the menu clears the selection", s.boards.length === 0 && s.disabled, JSON.stringify(s));
+  check("T18", "no console errors", h.errors.length === 0, h.errors.join("|"));
+  await h.context.close();
+};
+
 for (const name of (process.argv.length > 2 ? process.argv.slice(2) : Object.keys(tests))) {
   try { await tests[name](); } catch (e) { check(name, "threw", false, String(e.stack ?? e)); }
 }

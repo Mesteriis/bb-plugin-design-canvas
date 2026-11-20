@@ -473,6 +473,8 @@ export function mountCanvas(options: CanvasOptions): CanvasHandle {
     pick.addEventListener("click", (event) => {
       event.stopPropagation();
       closeContextMenu();
+      // The menu button had focus; without this it falls to body, outside the key handler
+      root.focus({ preventScroll: true });
       copySelection();
     });
     const row = el("div", "dc-menu-item");
